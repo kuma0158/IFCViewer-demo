@@ -1,8 +1,6 @@
 import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
-  plugins: [vue()],
   server: {
     // Cloudflare Tunnel 経由の公開ホスト名からのアクセスを許可する
     allowedHosts: ['ifc.shinobuabe.com'],

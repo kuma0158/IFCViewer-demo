@@ -23,6 +23,7 @@
 | Step 1 | `analyze_ifc.py`（CLI） | ifcopenshell で IFC から階・種類・プロパティセットを取り出せるか |
 | Step 2 | `backend/`（FastAPI） | 同じ解析を Web API として提供できるか |
 | Step 3〜4 | `frontend/`（Vue 3 + TS + Three.js + web-ifc） | ブラウザで 3D 表示し、クリックした部材と API の属性を結び付けられるか |
+| Step 5 | `frontend/` を純粋な TypeScript に置き換え（Vue を撤去） | フレームワーク無しでも同じ層分離を保てるか・依存を減らせるか |
 
 各 Step は前の Step の成果をそのまま土台にしています（Step 1 の解析ロジック → Step 2 の `ifc_service.py`）。
 「前の段階が動いている」ことを確認してから次に進むため、問題が起きたときに原因の切り分けが容易です。
@@ -74,9 +75,9 @@ CLI やテストからそのまま再利用できます。「見つからない�
 
 | ファイル | 責務 |
 |---|---|
-| `App.vue` | 画面全体の状態（モデル・選択中の部材・ステータス・エラー） |
-| `components/IfcViewer.vue` | 3D の表示・操作・選択。**API を知らない**（`fileUrl` を受け取り、`select` / `loaded` / `error` を emit するだけ） |
-| `lib/ifcLoader.ts` | web-ifc の出力 → Three.js Mesh への変換（Vue を知らない純粋関数） |
+| `app.ts` | 画面全体の状態（モデル・選択中の部材・ステータス・エラー）と DOM 描画 |
+| `viewer/IfcViewer.ts` | 3D の表示・操作・選択。**API を知らない**（`load(url)` で読み込み、`onSelect` / `onLoaded` / `onError` コールバックで通知するだけ） |
+| `lib/ifcLoader.ts` | web-ifc の出力 → Three.js Mesh への変換（DOM・画面を知らない純粋関数） |
 | `api.ts` | バックエンド呼び出し |
 | `types.ts` | API レスポンスの型（バックエンドとの契約） |
 | `lib/ifcLabels.ts` | 表示用の日本語ラベル |
@@ -121,10 +122,10 @@ CLI やテストからそのまま再利用できます。「見つからない�
 
 - `frontend/src/types.ts` は `backend/ifc_service.py` の戻り値と 1 対 1 で対応させた **API の契約書** です。
   キー名を変えたら両方を直す、というルールをコメントに明記しています。
-- `tsconfig.json` は `strict: true`。`npm run build` は `vue-tsc --noEmit` が通らなければビルドしません。
+- `tsconfig.json` は `strict: true`。`npm run build` は `tsc --noEmit` が通らなければビルドしません。
 - 状態は型で表現します。例：選択中の部材は `ElementDetail | NotFoundElement | null` として、
   「未選択」「対象外」「属性あり」の 3 状態をテンプレート側で型安全に分岐します。
-- TypeScript は `~5.9.3` に固定（TypeScript 7 は vue-tsc 未対応）。**動作確認済みのバージョンを固定し、理由を残す** 方針です。
+- TypeScript は `~5.9.3` に固定（Step 4 で vue-tsc のために固定したバージョンを、動作確認済みとしてそのまま使用）。**動作確認済みのバージョンを固定し、理由を残す** 方針です。
 
 ## 9. 開発・運用のしやすさ
 

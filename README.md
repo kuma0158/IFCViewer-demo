@@ -7,7 +7,7 @@ IFC（BIMの国際標準データ形式）をアップロードすると、3Dで
 ifc-pilot/
 ├─ analyze_ifc.py      Step 1: IFC解析スクリプト（コマンドライン）
 ├─ backend/            Step 2: FastAPI（IFC解析API / ifcopenshell）
-├─ frontend/           Step 4: Vue 3 + TypeScript + Three.js（3D表示 / web-ifc）
+├─ frontend/           Step 5: TypeScript（フレームワーク無し）+ Three.js（3D表示 / web-ifc）
 └─ samples/demo-house.ifc  動作確認用の小さなIFC（2階建て・壁8枚）
 ```
 
@@ -20,7 +20,7 @@ cd ifc-pilot\backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn main:app --reload
+uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 **ターミナル2：フロントエンド**（Node.js 20以上）
@@ -56,13 +56,17 @@ ifcopenshell とブラウザ側の web-ifc で共通です。これを両者を�
 
 ## 主なファイル
 
+設計・解説・レビュー記録は `docs/` にあります（`design-philosophy.md` / `backend.md` / `frontend.md` / `review-2026-10-03.md`）。
+
 | ファイル | 内容 |
 |---|---|
 | backend/ifc_service.py | IFC解析（集計・部材の属性取得） |
 | backend/main.py | APIエンドポイント |
 | frontend/src/lib/ifcLoader.ts | web-ifc の出力を Three.js のメッシュに変換 |
-| frontend/src/components/IfcViewer.vue | 3D表示・視点操作・クリック選択・ハイライト |
-| frontend/src/App.vue | 画面全体（アップロード・属性パネル） |
+| frontend/src/viewer/IfcViewer.ts | 3D表示・視点操作・クリック選択・ハイライト（クラス） |
+| frontend/src/app.ts | 画面全体（アップロード・属性パネル）の状態と DOM 描画 |
+| frontend/src/lib/dom.ts | DOM 生成ヘルパー（textContent のみ使用・innerHTML 不使用） |
+| frontend/src/style.css | 画面全体のスタイル |
 | frontend/src/lib/ifcLabels.ts | IFCクラス名・プロパティ名の日本語ラベル |
 | frontend/src/types.ts | APIレスポンスの型（backend/ifc_service.py の戻り値と対応） |
 
@@ -74,10 +78,11 @@ npm run typecheck   型チェックのみ
 npm run build       型チェック → 本番ビルド（型エラーがあればビルドしない）
 ```
 
-`npm run dev` は型チェックをしないので、エディタ（VS Code + Vue 拡張）の表示か `npm run typecheck` で確認します。
+`npm run dev` は型チェックをしないので、エディタ（VS Code）の表示か `npm run typecheck` で確認します。
 
 ## 確認済みバージョン
 
-ifcopenshell 0.9.0 / FastAPI / Vue 3.5 / three 0.186 / web-ifc 0.0.78 / Vite 8 / TypeScript 5.9 / vue-tsc 3.3
+ifcopenshell 0.9.0 / FastAPI / three 0.186 / web-ifc 0.0.78 / Vite 8 / TypeScript 5.9
 
-TypeScript 7（ネイティブ版）は vue-tsc が対応していないため、`~5.9.3` に固定しています。
+Step 5 で Vue を撤去し、フロントエンドはフレームワーク無しの TypeScript になりました。
+TypeScript は動作確認済みの `~5.9.3` に固定しています（vue-tsc が不要になったため、TypeScript 7 への更新も検討可能）。

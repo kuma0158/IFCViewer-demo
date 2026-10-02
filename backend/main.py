@@ -27,7 +27,7 @@ MAX_SIZE_MB = 100
 
 app = FastAPI(title="IFC Pilot API")
 
-# Step 3 の Vue 開発サーバー（Vite: 5173番）からの呼び出しを許可
+# フロントエンドの開発サーバー（Vite: 5173番）からの呼び出しを許可
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

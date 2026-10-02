@@ -1,67 +1,68 @@
-# フロントエンド解説（Vue 3 + TypeScript + Three.js + web-ifc）
+# フロントエンド解説（TypeScript + Three.js + web-ifc／フレームワーク無し）
 
 `frontend/` は、IFC ファイルをサーバーにアップロードし、ブラウザ上で 3D 表示して、クリックした部材の属性を表示する画面です。
+Step 5 で Vue を撤去し、画面は **純粋な TypeScript（DOM API）** で組み立てています。Vite は開発サーバー・バンドラーとしてのみ使います。
 
 ## 全体像
 
 ```
 frontend/
-├─ index.html                    エントリ HTML（#app に Vue をマウント）
+├─ index.html                    エントリ HTML（#app に画面を組み立てる）
 ├─ vite.config.ts                Vite 設定（/api を FastAPI へプロキシ）
 ├─ tsconfig.json                 TypeScript 設定（strict）
 ├─ package.json                  依存関係・npm スクリプト
 ├─ scripts/copy-wasm.mjs         web-ifc.wasm を public/ にコピー（npm install 時）
 ├─ public/web-ifc.wasm           web-ifc 本体（WebAssembly）
 └─ src/
-   ├─ main.ts                    Vue アプリの起動
-   ├─ App.vue                    画面全体（アップロード・ステータス・属性パネル）
+   ├─ main.ts                    起動（CSS 読み込み・mountApp）
+   ├─ app.ts                     画面全体（状態・アップロード・ステータス・属性パネルの描画）
+   ├─ style.css                  画面全体のスタイル
    ├─ api.ts                     バックエンド API の呼び出し
    ├─ types.ts                   API レスポンスの型定義
-   ├─ components/IfcViewer.vue   3D ビューア（表示・視点操作・クリック選択・ハイライト）
+   ├─ viewer/IfcViewer.ts        3D ビューア（クラス。表示・視点操作・クリック選択・ハイライト）
    └─ lib/
+      ├─ dom.ts                  DOM 生成ヘルパー（el / append / replaceChildren）
       ├─ ifcLoader.ts            web-ifc の出力 → Three.js の Mesh 変換
-      └─ ifcLabels.ts            IFC クラス名の日本語ラベル
+      └─ ifcLabels.ts            IFC クラス名などの日本語ラベル
 ```
 
 ## 使用ライブラリ
 
 | ライブラリ | 用途 |
 |---|---|
-| vue 3 | 画面の構築（Composition API / `<script setup>`） |
 | three | WebGL による 3D 描画 |
 | web-ifc | IFC をブラウザ内で解析し、三角形メッシュを出力する WebAssembly ライブラリ |
-| vite + @vitejs/plugin-vue | 開発サーバー・ビルド |
-| typescript 5.9 + vue-tsc | 型チェック（`.vue` ファイルの中も含めてチェック） |
+| vite | 開発サーバー・ビルド（TypeScript をそのまま扱える） |
+| typescript 5.9 | 型チェック（`tsc --noEmit`） |
 | @types/three | three の型定義（web-ifc は型定義を同梱） |
 
-## TypeScript 化のポイント
+## TypeScript のポイント
 
-- **設定**: `tsconfig.json` で `strict: true`。`npm run build` は `vue-tsc --noEmit`（型チェック）が通ってから `vite build` を実行します。型チェックだけなら `npm run typecheck`。
-- **バージョン**: TypeScript は `~5.9.3` に固定しています。最新の TypeScript 7 はネイティブ（Go）実装で、vue-tsc が対応していないためです。
-- **API の型（src/types.ts）**: `ModelSummary`（アップロード結果）、`ElementDetail`（部材の属性）などを、`backend/ifc_service.py` の戻り値に合わせて定義しています。バックエンドのキー名を変えたら、ここも合わせて変えます。キー名の書き間違い（例: `elementCnt`）はビルド時にエラーになります。
-- **Vue コンポーネント**: `<script setup lang="ts">` を使い、props と emits を型で宣言しています（`defineProps<{...}>()` / `defineEmits<{...}>()`）。親の `App.vue` でイベントの引数の型が自動的に決まります。
-- **未選択・対象外の表現**: `App.vue` の `element` は `ElementDetail | NotFoundElement | null` の型です。テンプレートの `v-else-if="'notFound' in element"` で絞り込むので、`v-else` の中では `ElementDetail` として扱えます。
+- **設定**: `tsconfig.json` で `strict: true`。`npm run build` は `tsc --noEmit`（型チェック）が通ってから `vite build` を実行します。型チェックだけなら `npm run typecheck`。
+- **バージョン**: TypeScript は動作確認済みの `~5.9.3` に固定しています（Step 4 では vue-tsc 対応のための固定でした。Vue 撤去により TypeScript 7 への更新も検討可能）。
+- **API の型（src/types.ts）**: `ModelSummary`（アップロード結果）、`ElementDetail`（部材の属性）などを、`backend/ifc_service.py` の戻り値に合わせて定義しています。バックエンドのキー名を変えたら、ここも合わせて変えます。
+- **未選択・対象外の表現**: `app.ts` の `state.element` は `ElementDetail | NotFoundElement | null` の型です。`renderSide()` で `'notFound' in element` により絞り込むので、それ以降は `ElementDetail` として扱えます。
 - **three の型**: `modelGroup.children` は `Object3D[]` 型ですが、中身は `ifcLoader.ts` で作った `Mesh` だけなので、`modelMeshes()` で `Mesh[]` として扱っています。
 
 ## 処理の流れ
 
 ```
-[App.vue] ファイル選択
+[app.ts] ファイル選択（change イベント）
    │  uploadModel(file)  ── POST /api/models ──▶ FastAPI（解析・modelId 発行）
    │  ◀── modelId・集計結果
-   │  fileUrl = /api/models/{modelId}/file
+   │  viewer.load(`/api/models/{modelId}/file`)
    ▼
-[IfcViewer.vue] fileUrl の変化を watch
-   │  fetch(fileUrl) → Uint8Array
+[viewer/IfcViewer.ts] load(url)
+   │  fetch(url) → Uint8Array
    │  buildIfcGroup(ifcApi, data)   ← lib/ifcLoader.ts
    │  scene に追加・カメラをフィット
-   │  emit('loaded', { meshCount })
+   │  onLoaded({ meshCount })
    ▼
 部材クリック → Raycaster で Mesh 特定 → userData.expressID
-   │  ハイライト + emit('select', expressID)
+   │  ハイライト + onSelect(expressID)
    ▼
-[App.vue] fetchElement(modelId, expressID) ── GET /api/models/{id}/elements/{expressID}
-   ◀── 属性情報 → 右パネルに表示
+[app.ts] fetchElement(modelId, expressID) ── GET /api/models/{id}/elements/{expressID}
+   ◀── 属性情報 → renderSide() で右パネルに表示
 ```
 
 サーバー側（ifcopenshell）で集計・属性取得、ブラウザ側（web-ifc）で 3D 形状生成、と役割分担しています。
@@ -72,10 +73,11 @@ frontend/
 ### vite.config.ts
 
 ```js
-server: { proxy: { '/api': 'http://127.0.0.1:8000' } }
+server: { proxy: { '/api': 'http://127.0.0.1:8001' } }
 ```
 
 開発時、`/api/...` へのリクエストを FastAPI に転送します。フロントのコードは相対パス `/api/...` で書けるため、CORS やホスト名を意識せずに済みます。
+Vue プラグインは不要になったので、`plugins` は指定していません。
 
 ### scripts/copy-wasm.mjs
 
@@ -84,7 +86,7 @@ server: { proxy: { '/api': 'http://127.0.0.1:8000' } }
 
 ### main.ts / index.html
 
-`createApp(App).mount('#app')` で `App.vue` を起動するだけです。
+`style.css` を読み込み、`mountApp(document.getElementById('app')!)` で画面を組み立てるだけです。
 
 ## src/api.ts — API 呼び出し
 
@@ -96,106 +98,92 @@ server: { proxy: { '/api': 'http://127.0.0.1:8000' } }
 
 共通の `handle(res)` で JSON を読み、エラー時は FastAPI の `detail` メッセージ（無ければ `通信エラー (ステータス)`）で `Error` を投げます。
 
-## src/App.vue — 画面全体
+## src/lib/dom.ts — DOM 生成ヘルパー
 
-### 状態（ref）
+| 関数 | 内容 |
+|---|---|
+| `el(tag, options, ...children)` | 要素を作る。`options` は `class` / `title` / `attrs`。子は Node か文字列 |
+| `append(parent, ...children)` | 子を追加。`null` / `undefined` / `false` は無視（条件付き表示を `cond && el(...)` で書ける） |
+| `replaceChildren(parent, ...children)` | 中身を差し替える（再描画用） |
+
+**文字列は必ず textContent（テキストノード）として入れ、innerHTML は使いません。**
+部材名やプロパティ値は IFC の作成者が自由に書ける値なので、HTML として解釈させると XSS の原因になるためです。
+
+## src/app.ts — 画面全体
+
+### 状態（state）
+
+Vue の `ref` の代わりに、1 つのオブジェクト `state` に状態をまとめます。変更したら対応する `render*()` を呼んで DOM に反映します（自動追跡はしない）。
 
 | 変数 | 内容 |
 |---|---|
 | `model` | `POST /api/models` のレスポンス（modelId・集計結果） |
-| `fileUrl` | ビューアに渡す IFC の URL |
 | `element` | 選択中の部材の属性（未選択は `null`） |
 | `status` | ヘッダーに出すメッセージ |
-| `error` | エラーメッセージ（赤帯で表示） |
+| `error` | エラーメッセージ（赤帯で表示。空なら `hidden`） |
 | `uploading` | アップロード中フラグ（ボタンを無効化） |
 
-### 主な関数
+### 構成
 
-- **`onFileChange(e)`**
-  ファイル選択時に呼ばれ、`uploadModel` → 成功したら `fileUrl` をセット。
-  `fileUrl` が変わると `IfcViewer` が自動で 3D 読み込みを始めます。
-  最後に `e.target.value = ''` として、同じファイルを再選択しても `change` が発火するようにしています。
-- **`onLoaded({ meshCount })`**
-  3D 読み込み完了時にステータス（ファイル名・部材数・メッシュ数）を更新。
-- **`onSelect(expressId)`**
-  `null`（何もない所をクリック）なら選択解除。それ以外は属性を取得。
-  API が 404 を返すもの（`IfcSpace` など、形状はあるが `IfcElement` ではないもの）は `{ notFound: true }` として「対象外」と表示します。
-- **`formatValue(v)`**
-  真偽値を「はい／いいえ」、空値を「—」、オブジェクトを JSON 文字列に変換して表示用に整形。
+- **骨組み**: `mountApp()` の最初に header / エラー帯 / main（`.viewer-pane` と `.side`）を一度だけ作り、`new IfcViewer(viewerPane, { onLoaded, onSelect, onError })` でビューアを差し込みます。
+- **`onFileChange()`**: `uploadModel` → 成功したら `viewer.load(modelFileUrl(...))`。最後に `fileInput.value = ''` として、同じファイルを再選択しても `change` が発火するようにしています。
+- **`onSelect(expressId)`**: `null`（何もない所をクリック）なら選択解除。それ以外は属性を取得。API が 404 を返すもの（`IfcSpace` など）は `{ notFound: true }` として「対象外」と表示します。
+- **`renderHeader()`**: ボタンの文言・無効化、ステータス、エラー帯を更新（既存要素の中身だけ書き換える）。
+- **`renderSide()`**: 属性パネルを丸ごと作り直す。基本情報（種類・名前・階・GlobalId）を `<dl>` で、プロパティセットごとに見出し＋`<table>` で表示（`elementDetail()` / `psetBlock()`）。
+- **`formatValue(v)`**: 真偽値を「はい／いいえ」、空値を「—」、オブジェクトを JSON 文字列に変換。
+- 幅 760px 以下では縦並び（ビューア上・パネル下）になるレスポンシブ対応（`style.css`）。
 
-### テンプレート構成
-
-- **header**: タイトル、ファイル選択ボタン（`<input type="file">` を非表示にして `<label>` をボタン化）、ステータス
-- **main**
-  - 左 `.viewer-pane`: `<IfcViewer>`。未読み込み時はヒント文を重ねて表示
-  - 右 `.side`: 属性パネル。基本情報（種類・名前・階・GlobalId）を `<dl>` で、プロパティセットごとに見出し＋`<table>` で表示
-- 幅 760px 以下では縦並び（ビューア上・パネル下）になるレスポンシブ対応
-
-## src/components/IfcViewer.vue — 3D ビューア
+## src/viewer/IfcViewer.ts — 3D ビューア
 
 ### インターフェース
 
-- props: `fileUrl`（IFC の URL）
-- emits:
-  - `loaded` … 読み込み完了（`{ meshCount }`）
-  - `select` … クリックされた部材の expressID（空クリックは `null`）
-  - `error` … エラーメッセージ
-- expose: `highlight(expressID)`（親から任意の部材をハイライトできる）
+```ts
+const viewer = new IfcViewer(container, {
+  onLoaded: ({ meshCount }) => { ... },  // 読み込み完了
+  onSelect: (expressID) => { ... },      // クリックされた部材（空クリックは null）
+  onError: (message) => { ... },         // エラーメッセージ
+})
+await viewer.load(url)       // IFC を読み込んで表示
+viewer.highlight(expressID)  // 任意の部材をハイライト（null で解除）
+viewer.dispose()             // 取り外し（GPU リソース・監視・イベントを解放）
+```
 
-### 初期化（onMounted）
+API（`api.ts`）は知りません。URL を受け取って表示し、結果をコールバックで返すだけです。
 
-1. `Scene`（背景色 `#eef1f5`）、`PerspectiveCamera`、`WebGLRenderer` を作成し、canvas をコンテナに追加
-2. `OrbitControls` でマウス操作（左ドラッグ回転・右ドラッグ平行移動・ホイールズーム）。`enableDamping` で慣性あり
+### 初期化（constructor）
+
+1. コンテナ内に `.viewer` 要素（読み込み中オーバーレイ付き）を作り、`WebGLRenderer` の canvas を追加
+2. `Scene`（背景色 `#eef1f5`）、`PerspectiveCamera`、`OrbitControls`（`enableDamping` で慣性あり）
 3. 環境光 + 平行光源、グリッドを配置
-4. `ResizeObserver` でコンテナのサイズ変化に追従（`resize()` でレンダラーとカメラのアスペクト比を更新）
+4. `ResizeObserver` でサイズ変化に追従（`resize()` でレンダラーとカメラのアスペクト比を更新）
 5. `setAnimationLoop` で毎フレーム `controls.update()` と描画
-6. pointerdown / pointerup のイベントを登録
+6. pointerdown / pointerup を登録（`removeEventListener` できるよう、アロー関数のプロパティとして定義）
 
-`onBeforeUnmount` ではループ停止・監視解除・モデル破棄・レンダラー破棄を行います。
+`dispose()` ではループ停止・監視解除・イベント解除・モデル破棄・レンダラー破棄を行います。
 
 ### web-ifc の初期化（getIfcApi）
 
-```js
-ifcApi = new IfcAPI()
-ifcApi.SetWasmPath('/', true)
-await ifcApi.Init()
-```
-
-`/web-ifc.wasm` を読み込んで初期化します。初期化は重いので、最初の 1 回だけ行いインスタンスを使い回します。
+`new IfcAPI()` → `SetWasmPath('/', true)` → `Init()` で `/web-ifc.wasm` を読み込みます。初期化は重いので、最初の 1 回だけ行いインスタンスを使い回します。
 
 ### 読み込み（load）
 
-1. `fetch(url)` で IFC を取得し `Uint8Array` に
+1. オーバーレイを表示し、`fetch(url)` で IFC を取得して `Uint8Array` に
 2. `buildIfcGroup()` で Three.js の `Group` に変換
 3. 既存モデルを `clearModel()` で破棄してから新しい Group をシーンに追加
 4. `fitCamera()` でモデル全体が収まるようカメラを移動
-5. `loaded` を emit。失敗時は `error` を emit
-
-`watch(() => props.fileUrl, ...)` により、`fileUrl` が変わるたびに自動で読み込み直します。
+5. `onLoaded` を呼ぶ。失敗時は `onError`
 
 ### カメラ合わせ（fitCamera）
 
-モデルのバウンディングボックスから対角長 `size` と中心 `center` を求め、
-
-- 注視点を `center` に
-- カメラを斜め上 `(1, 0.8, 1)` 方向、距離 `size × 1.2` に配置
-- `near = size / 1000`、`far = size × 20` として、モデルの大きさに関係なくクリッピングされにくくする
+モデルのバウンディングボックスから対角長 `size` と中心 `center` を求め、注視点を `center` に、カメラを斜め上 `(1, 0.8, 1)` 方向・距離 `size × 1.2` に配置。`near = size / 1000`、`far = size × 20` としてクリッピングされにくくします。
 
 ### クリック選択
 
 **ドラッグとクリックの区別**: pointerdown の位置を記録し、pointerup で移動距離が 4px 未満かつ左ボタンのときだけ「クリック」とみなします（視点操作のドラッグで誤選択しないため）。
 
-**ピック（pick）**:
+**ピック（pick）**: マウス座標を正規化デバイス座標に変換 → `Raycaster` で `modelGroup.children` と交差判定 → 最も手前のヒットの `userData.expressID` を取得 → `highlight()` して `onSelect` を呼ぶ。
 
-1. マウス座標を正規化デバイス座標（-1〜1）に変換
-2. `Raycaster` でカメラからレイを飛ばし、`modelGroup.children` と交差判定
-3. 最も手前のヒットの `userData.expressID` を取得
-4. `highlight()` で色替えし、`select` を emit
-
-**ハイライト（highlight）**:
-
-1 つの部材が複数の Mesh で構成される場合があるため、**同じ expressID を持つ Mesh をすべて** オレンジ（`#ff7a1a`）に差し替えます。
-元のマテリアルは `userData.originalMaterial` に退避し、次の選択時に戻します。
+**ハイライト（highlight）**: 1 つの部材が複数の Mesh で構成される場合があるため、**同じ expressID を持つ Mesh をすべて** オレンジ（`#ff7a1a`）に差し替えます。元のマテリアルは `userData.originalMaterial` に退避し、次の選択時に戻します。
 
 ## src/lib/ifcLoader.ts — IFC → Three.js 変換
 
@@ -234,6 +222,8 @@ web-ifc の頂点データは 1 頂点 6 要素 `[x, y, z, nx, ny, nz]` が並�
 属性パネルでは、プロパティセットの見出しに日本語名と元の英語名（小さい文字）を並べて表示します。プロパティ名は日本語で表示し、マウスを乗せると元の英語名がツールチップで出ます。
 
 ## 注意点・今後の改善候補
+
+> 2026-10-03 のコードレビュー結果（F-1〜F-7）は [review-2026-10-03.md](review-2026-10-03.md#フロントエンド) を参照。
 
 - **マテリアルの破棄漏れ**: `clearModel()` はジオメトリのみ `dispose()` しており、マテリアルは破棄していません。モデルを何度も読み替えると GPU メモリが少しずつ残ります。
 - **読み込みの競合**: 読み込み中に別ファイルを選ぶと、2 つの `load` が並行し、後から終わった方が表示されます。
