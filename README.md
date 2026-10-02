@@ -70,7 +70,7 @@ ifcopenshell とブラウザ側の web-ifc で共通です。これを両者を�
 
 ## 主なファイル
 
-設計・解説・レビュー記録は `docs/` にあります（`design-philosophy.md` / `design-backend.md` / `design-frontend.md` / `backend.md` / `frontend.md` / `review-2026-10-03.md`）。
+設計・解説・レビュー記録は `docs/` にあります（`design-philosophy.md` / `design-backend.md` / `design-frontend.md` / `backend.md` / `frontend.md` / `review-2026-10-03.md` / `e2e-2026-10-03.md`）。
 
 | ファイル | 内容 |
 |---|---|
@@ -93,6 +93,16 @@ npm run build       型チェック → 本番ビルド（型エラーがあれ�
 ```
 
 `npm run dev` は型チェックをしないので、エディタ（VS Code）の表示か `npm run typecheck` で確認します。
+
+## E2E テスト（稼働中のシステムに対して）
+
+```
+cd ifc-pilot
+backend\venv\Scripts\python.exe scripts\e2e_api.py
+```
+
+フロントエンド（:5173）の `/api` 転送を通して、配信・アップロード・属性取得・エラー処理を確認します（標準ライブラリのみ）。
+公開ホスト名に対しては `--base https://ifc.shinobuabe.com --skip-heavy`。画面の確認手順と結果は `docs/e2e-2026-10-03.md`。
 
 ## 確認済みバージョン
 
