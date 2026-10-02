@@ -26,6 +26,10 @@ frontend/
       └─ ifcLabels.ts            IFC クラス名などの日本語ラベル
 ```
 
+## 動作環境
+
+Node.js `^20.19.0 || >=22.12.0`（Vite 8 の要件）。`package.json` の `engines` にも記載しており、合わない Node.js で `npm install` すると警告が出ます。
+
 ## 使用ライブラリ
 
 | ライブラリ | 用途 |
@@ -84,7 +88,7 @@ Vue プラグインは不要になったので、`plugins` は指定していま
 
 ### 開発モードと本番モード
 
-| | 開発（`npm run dev`） | 本番（`npm run build` → `npm run serve`） |
+| | 開発（`npm run dev`） | 本番（`npm run build` → `npm run serve`。Vite 標準名の `npm run preview` でも同じ） |
 |---|---|---|
 | 配信するもの | `src/` の TypeScript をその場で変換 | `dist/`（型チェック済み・圧縮済みのファイル） |
 | ソースの公開 | `/src/...` が読める | 読めない（`dist/` だけを配信） |

@@ -23,7 +23,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-**ターミナル2：フロントエンド**（Node.js 20以上）
+**ターミナル2：フロントエンド**（Node.js 20.19 以上、または 22.12 以上。Vite 8 の要件）
 
 ```
 cd ifc-pilot\frontend
