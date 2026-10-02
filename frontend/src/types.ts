@@ -37,3 +37,9 @@ export type PropertySets = Record<string, Record<string, unknown>>
 export interface ElementDetail extends ElementRow {
   propertySets: PropertySets
 }
+
+/**
+ * モデルが見つからないときの 404 の detail（backend/main.py の MODEL_NOT_FOUND_DETAIL と同じ文言）
+ * 部材の 404（対象外）と、モデルの 404（サーバー再起動などで消えた）を区別するために使う
+ */
+export const MODEL_NOT_FOUND_DETAIL = 'モデルが見つかりません'

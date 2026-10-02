@@ -7,10 +7,10 @@ cd ifc-pilot\backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn main:app --reload
+uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-ブラウザで http://127.0.0.1:8000/docs を開くと、Swagger UI から各APIを試せます。
+ブラウザで http://127.0.0.1:8001/docs（8000 は別プロジェクトが使用しているため 8001） を開くと、Swagger UI から各APIを試せます。
 
 ## API
 
@@ -32,3 +32,14 @@ uvicorn main:app --reload
 - **expressId** はIFCファイル内の `#123` の番号。ブラウザ側の 3D ライブラリ（web-ifc）でも同じ番号が使われるので、Step 3 で「クリックした部材 → このAPIで属性取得」とつなげるキーになります。
 - 解析済みモデルはメモリ上に保持しています（パイロット用。サーバー再起動で消えます）。本番ならDBやキャッシュに置き換えるところです。
 - IFC処理は `ifc_service.py`、HTTPの処理は `main.py` に分けています。
+- メモリに保持するモデルは最大 20 件（`MAX_MODELS`）。超えると最後に使われたのが最も古いものから、ファイルごと捨てます。
+- 起動時に `uploads/` の前回のファイルを削除します（再起動でモデルが消える仕様と揃えるため）。
+
+## テスト
+
+```
+cd ifc-pilot\backend
+venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+追加の依存は不要です（標準の unittest）。`samples/demo-house.ifc` を使って `ifc_service.py` と `main.py` の補助関数を確認します。

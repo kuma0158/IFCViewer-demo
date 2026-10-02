@@ -28,7 +28,10 @@ export class IfcViewer {
   private readonly resizeObserver: ResizeObserver
   private readonly raycaster = new THREE.Raycaster()
 
-  private ifcApi: IfcAPI | null = null
+  // 初期化中の Promise ごと保持する（初期化完了前に load が2回呼ばれても、WASM の初期化は1回だけ）
+  private ifcApiPromise: Promise<IfcAPI> | null = null
+  // load のたびに増やす番号。読み込み完了時に最新でなければ結果を捨てる
+  private loadSeq = 0
   private modelGroup: THREE.Group | null = null
   private selected: number | null = null
   // ドラッグ（視点操作）とクリックを区別するため、押した位置と離した位置を比べる
@@ -83,6 +86,7 @@ export class IfcViewer {
 
   /** 画面から取り外すときに呼ぶ（GPU リソース・監視・イベントを解放） */
   dispose(): void {
+    this.loadSeq++ // 読み込み中のものがあれば、完了しても反映しない
     this.renderer.setAnimationLoop(null)
     this.resizeObserver.disconnect()
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown)
@@ -94,23 +98,33 @@ export class IfcViewer {
     this.root.remove()
   }
 
+  /**
+   * IFC を読み込んで表示する。読み込み中に再度呼ばれた場合は、最後に呼ばれたものだけを表示する
+   * （先に呼ばれた方の結果・エラーは捨てる）。失敗したときは表示中のモデルも消す。
+   */
   async load(url: string): Promise<void> {
+    const seq = ++this.loadSeq
     this.overlay.hidden = false
     try {
       const res = await fetch(url)
       if (!res.ok) throw new Error(`IFCファイルを取得できませんでした (${res.status})`)
       const data = new Uint8Array(await res.arrayBuffer())
+      const ifcApi = await this.getIfcApi()
+      if (seq !== this.loadSeq) return
 
-      const { group, meshCount } = buildIfcGroup(await this.getIfcApi(), data)
+      const { group, meshCount } = buildIfcGroup(ifcApi, data)
       this.clearModel()
       this.modelGroup = group
       this.scene.add(group)
       this.fitCamera(group)
       this.events.onLoaded?.({ meshCount })
     } catch (e) {
+      if (seq !== this.loadSeq) return
+      // 前のモデルを残すと「画面のモデル」と「アップロードしたモデル」が食い違うので消す
+      this.clearModel()
       this.events.onError?.(e instanceof Error ? e.message : String(e))
     } finally {
-      this.overlay.hidden = true
+      if (seq === this.loadSeq) this.overlay.hidden = true
     }
   }
 
@@ -142,24 +156,31 @@ export class IfcViewer {
     this.camera.updateProjectionMatrix()
   }
 
-  private async getIfcApi(): Promise<IfcAPI> {
-    if (!this.ifcApi) {
+  private getIfcApi(): Promise<IfcAPI> {
+    this.ifcApiPromise ??= (async () => {
       const api = new IfcAPI()
       // public/ に置いた web-ifc.wasm を読む（npm install 時に自動コピー）
       api.SetWasmPath('/', true)
       await api.Init()
-      this.ifcApi = api
-    }
-    return this.ifcApi
+      return api
+    })().catch((e: unknown) => {
+      this.ifcApiPromise = null // 失敗したら次の load で初期化をやり直す
+      throw e
+    })
+    return this.ifcApiPromise
   }
 
   private clearModel(): void {
-    this.selected = null
+    this.highlight(null) // ハイライト中の Mesh に元のマテリアルを戻してから破棄する
     if (!this.modelGroup) return
     this.scene.remove(this.modelGroup)
-    this.modelGroup.traverse((o) => {
-      if (o instanceof THREE.Mesh) o.geometry.dispose()
-    })
+    // マテリアルは同じ色の Mesh で共有しているので、重複なく集めてから破棄する
+    const materials = new Set<THREE.Material>()
+    for (const m of this.modelMeshes()) {
+      m.geometry.dispose()
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) materials.add(mat)
+    }
+    materials.forEach((mat) => mat.dispose())
     this.modelGroup = null
   }
 

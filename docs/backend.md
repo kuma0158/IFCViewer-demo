@@ -24,7 +24,7 @@ backend/
 | パッケージ | 用途 |
 |---|---|
 | fastapi | Web API フレームワーク |
-| uvicorn[standard] | ASGI サーバー（`uvicorn main:app --reload` で起動） |
+| uvicorn[standard] | ASGI サーバー（`uvicorn main:app --host 127.0.0.1 --port 8001 --reload` で起動） |
 | python-multipart | `multipart/form-data`（ファイルアップロード）の受信に必要 |
 | ifcopenshell | IFC ファイルの読み込み・解析 |
 
@@ -33,13 +33,18 @@ backend/
 ### 初期設定
 
 ```python
-UPLOAD_DIR = Path(__file__).parent / "uploads"
+UPLOAD_DIR = FsPath(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_SIZE_MB = 100
+MAX_MODELS = 20
+MODEL_NOT_FOUND_DETAIL = "モデルが見つかりません"
 ```
 
-- アップロード先は `main.py` と同じ階層の `uploads/`。起動時に無ければ作成します。
-- 受け付けるファイルサイズの上限は 100MB。
+- アップロード先は `main.py` と同じ階層の `uploads/`。無ければ作成します。
+- 受け付けるファイルサイズの上限は 100MB。書き込み中に数え、超えた時点で打ち切ります。
+- メモリに保持するモデルは最大 20 件。
+- `MODEL_NOT_FOUND_DETAIL` は `frontend/src/types.ts` と同じ文言。フロントは「部材が無い 404（対象外）」と「モデルが無い 404（再起動などで消えた）」をこの文言で区別します。
+- FastAPI の `lifespan` で、**起動時に `uploads/*.ifc` を削除** します（再起動でモデルが消える仕様と揃えるため。import 時ではなく起動時に行うので、`python -c "import main"` で確認しても稼働中サーバーのファイルは消えません）。
 
 ### CORS
 
@@ -52,15 +57,17 @@ app.add_middleware(
 ```
 
 Vite 開発サーバー（5173 番ポート）からのブラウザ直接アクセスを許可しています。
-なお、実際にはフロントエンドは Vite のプロキシ経由（`/api` → `127.0.0.1:8000`）で呼び出すため同一オリジン扱いとなり、CORS は保険的な設定です。
+なお、実際にはフロントエンドは Vite のプロキシ経由（`/api` → `127.0.0.1:8001`）で呼び出すため同一オリジン扱いとなり、CORS は保険的な設定です。
 
 ### モデルの保持
 
 ```python
-_models: dict[str, dict] = {}
+_models: OrderedDict[str, dict] = OrderedDict()
+_models_lock = threading.Lock()
 ```
 
 解析済みモデルを **プロセスのメモリ上の辞書** に保持します。キーは `modelId`（UUID の hex 文字列）、値は次の内容です。
+並び順は「最後に使われた順」で、`_get()` で使うたびに末尾へ移動し、`_register()` で 20 件を超えたら先頭（最も使われていないもの）からファイルごと捨てます。
 
 | キー | 内容 |
 |---|---|
@@ -68,23 +75,28 @@ _models: dict[str, dict] = {}
 | summary | `ifc_service.summarize()` の結果 |
 | path | 保存した IFC ファイルのパス |
 | filename | アップロード時の元ファイル名 |
+| lock | モデルごとの `threading.Lock`。ifcopenshell はスレッドセーフを保証していないので、同じモデルへの属性取得を 1 つずつにする |
 
-パイロット用の簡易実装のため、サーバーを再起動すると消えます（`uploads/` のファイルは残りますが、再度参照する手段はありません）。
+パイロット用の簡易実装のため、サーバーを再起動すると消えます（`uploads/` のファイルも起動時に削除します）。
 
-`_get(model_id)` は辞書から取り出し、無ければ 404 を返す共通ヘルパーです。
+`_get(model_id)` は辞書から取り出し、無ければ 404（`MODEL_NOT_FOUND_DETAIL`）を返す共通ヘルパーです。
+ファイル削除は `_remove_file()` 経由で行い、Windows で配信中のファイルが消せない場合（`PermissionError`）でも処理を止めません。
 
 ### エンドポイント
 
 #### `POST /api/models` — アップロード・解析
 
+`async def` ではなく **`def`** で定義しています。ファイル書き込みと ifcopenshell の解析は同期処理なので、
+`async def` の中で行うとイベントループが止まり、解析中は他の利用者のリクエストまで待たされるためです（`def` なら FastAPI がスレッドプールで実行します）。
+
 処理の流れ:
 
 1. 拡張子が `.ifc` でなければ **400**
-2. `uuid4().hex` で `modelId` を発行し、`uploads/<modelId>.ifc` に保存
-3. 保存後のサイズが 100MB を超えていたらファイルを削除して **413**
+2. `uuid4().hex` で `modelId` を発行し、`_save_upload()` で `uploads/<modelId>.ifc` に 1MB ずつ書き込む
+3. 書き込み中に累計が 100MB を超えたら、その時点で打ち切ってファイルを削除し **413**
 4. `ifc_service.open_model()` で読み込み。失敗したら `describe_open_error()` で原因別の日本語メッセージを作り、ファイルを削除して **422**
 5. `summarize()` で集計。例外が出たらファイルを削除して **422**
-6. `_models` に登録し、`{"modelId", "filename", ...summary}` を返す
+6. `_register()` で `_models` に登録し（上限を超えたら古いものを破棄）、`{"modelId", "filename", ...summary}` を返す
 
 レスポンス例:
 
@@ -171,7 +183,8 @@ return container.Name if container and container.Name else "(所属なし)"
 
 1 つの部材の詳細を返します。
 
-1. `model.by_id(express_id)` で取得。存在しない ID は `RuntimeError` になるので `None` を返す
+1. `model.by_id(express_id)` で取得。存在しない ID（`RuntimeError`）や C++ の int に収まらない ID（`OverflowError`）は `None` を返す
+   （API 側でもパスパラメータを `1〜2147483647` に制限しており、範囲外は 422 になる）
 2. `IfcElement` でなければ `None`（例: `IfcSpace` や `IfcSite` など、形状はあっても部材ではないもの）
 3. `element_util.get_psets(el)` でプロパティセット（Pset / 数量セット）を辞書で取得
 4. ifcopenshell が各セットに付与する内部用の `"id"` キーを除去
@@ -200,8 +213,7 @@ return container.Name if container and container.Name else "(所属なし)"
 
 > 2026-10-03 のコードレビュー結果（B-1〜B-7）は [review-2026-10-03.md](review-2026-10-03.md#バックエンド) を参照。
 
-- **永続化なし**: モデルはメモリ保持のみ。本番では DB やキャッシュ（Redis 等）、オブジェクトストレージへの置き換えが必要です。
-- **ファイルの後始末**: `uploads/` の IFC は削除されずに溜まり続けます。
-- **サイズチェックのタイミング**: 上限チェックはファイルを全部書き込んだ後に行っているため、巨大ファイルでも一度はディスクに書かれます。
-- **同期処理**: `upload_model` は `async def` ですが、ファイルコピーと ifcopenshell の解析は同期処理のため、大きなファイルの解析中は他のリクエストが待たされます。`def` にしてスレッドプールで実行させる、またはバックグラウンドジョブ化が考えられます。
-- **認証なし**: `modelId` を知っていれば誰でもアクセスできます。
+- **永続化なし**: モデルはメモリ保持のみ（最大 20 件）。本番では DB やキャッシュ（Redis 等）、オブジェクトストレージへの置き換えが必要です。
+- **件数でしか上限を設けていない**: 20 件でも、大きな IFC ばかりならメモリを多く使います。必要ならサイズの合計や有効期限での破棄を加えます。
+- **解析はリクエストの中で行う**: スレッドプールで実行するので他のリクエストは止まりませんが、アップロードした本人は解析が終わるまで待ちます。巨大なファイルを扱うならバックグラウンドジョブ化が考えられます。
+- **認証なし**: `modelId` を知っていれば誰でもアクセスできます。公開する場合は Cloudflare Access などで利用者を絞ってください。

@@ -56,7 +56,7 @@ ifcopenshell とブラウザ側の web-ifc で共通です。これを両者を�
 
 ## 主なファイル
 
-設計・解説・レビュー記録は `docs/` にあります（`design-philosophy.md` / `backend.md` / `frontend.md` / `review-2026-10-03.md`）。
+設計・解説・レビュー記録は `docs/` にあります（`design-philosophy.md` / `design-backend.md` / `design-frontend.md` / `backend.md` / `frontend.md` / `review-2026-10-03.md`）。
 
 | ファイル | 内容 |
 |---|---|

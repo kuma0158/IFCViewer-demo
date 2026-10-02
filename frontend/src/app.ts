@@ -4,9 +4,10 @@
  * 状態は state にまとめ、変更したら対応する render 関数を呼んで DOM に反映する。
  * 3D ビューア（IfcViewer）とはコールバックでつなぐ。
  */
-import { fetchElement, modelFileUrl, uploadModel } from './api'
+import { ApiError, fetchElement, modelFileUrl, uploadModel } from './api'
 import { append, el, replaceChildren } from './lib/dom'
 import { classLabel, propLabel, psetLabel } from './lib/ifcLabels'
+import { MODEL_NOT_FOUND_DETAIL } from './types'
 import type { ElementDetail, ModelSummary, PropertySets } from './types'
 import { IfcViewer } from './viewer/IfcViewer'
 
@@ -32,6 +33,9 @@ export function mountApp(root: HTMLElement): void {
     error: '',
     uploading: false,
   }
+  // 選択のたびに増やす番号。応答が届いたとき最新の選択でなければ捨てる
+  // （A→B と素早くクリックして A の応答が後から届くと、ハイライトとパネルが食い違うため）
+  let selectSeq = 0
 
   // ---- 骨組み（一度だけ作る） ----
   const fileInput = el('input', { attrs: { type: 'file', accept: '.ifc' } })
@@ -62,8 +66,15 @@ export function mountApp(root: HTMLElement): void {
     },
     onSelect: (expressId) => void onSelect(expressId),
     onError: (message) => {
+      // ビューアは失敗時に表示中のモデルを消すので、画面の状態もモデル無しに揃える
+      state.model = null
+      state.element = null
+      selectSeq++
       state.error = message
+      state.status = '3D表示に失敗しました'
+      hintEl.hidden = false
       renderHeader()
+      renderSide()
     },
   })
 
@@ -75,6 +86,7 @@ export function mountApp(root: HTMLElement): void {
     if (!file) return
     state.error = ''
     state.element = null
+    selectSeq++ // 前のモデルへの属性取得の応答が遅れて届いても反映しない
     state.uploading = true
     state.status = 'サーバーで解析中…'
     renderHeader()
@@ -96,16 +108,36 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function onSelect(expressId: number | null) {
-    if (expressId === null || !state.model) {
+    const seq = ++selectSeq
+    const model = state.model
+    if (expressId === null || !model) {
       state.element = null
-    } else {
-      try {
-        state.element = await fetchElement(state.model.modelId, expressId)
-      } catch {
-        // 形状はあるが IfcElement ではないもの（空間など）はAPI側で404になる
-        state.element = { notFound: true, expressId }
+      renderSide()
+      return
+    }
+    let element: AppState['element']
+    let error = ''
+    try {
+      element = await fetchElement(model.modelId, expressId)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404 && err.message !== MODEL_NOT_FOUND_DETAIL) {
+        // 形状はあるが IfcElement ではないもの（空間など）はAPI側で404になる。エラーではなく「対象外」として表示
+        element = { notFound: true, expressId }
+      } else {
+        element = null
+        error =
+          err instanceof ApiError && err.message === MODEL_NOT_FOUND_DETAIL
+            ? 'サーバー側でモデルが見つかりません（サーバーの再起動などで消えた可能性があります）。もう一度IFCファイルを開いてください。'
+            : err instanceof Error
+              ? err.message
+              : String(err)
       }
     }
+    if (seq !== selectSeq) return // より新しい選択が始まっていれば、この応答は捨てる
+    if (error) viewer.highlight(null) // 属性が出せないのにハイライトだけ残ると、選択中に見えてしまうため
+    state.element = element
+    state.error = error
+    renderHeader()
     renderSide()
   }
 

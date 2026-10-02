@@ -35,8 +35,20 @@ h1 span {
   font-weight: 400;
   opacity: 0.6;
 }
+/* display: none だとキーボードで選べなくなるので、見た目だけ隠してフォーカスは受けられるようにする */
+.upload {
+  position: relative;
+}
 .upload input {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+.upload:focus-within {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 .upload {
   background: #ff7a1a;

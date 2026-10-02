@@ -93,7 +93,7 @@ def element_detail(model: ifcopenshell.file, express_id: int) -> dict | None:
     """1つの部材の基本情報とプロパティセットを返す"""
     try:
         el = model.by_id(express_id)
-    except RuntimeError:
+    except (RuntimeError, OverflowError):  # 存在しない番号 / C++ の int に収まらない番号
         return None
     if not el.is_a("IfcElement"):
         return None
