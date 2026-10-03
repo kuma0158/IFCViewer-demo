@@ -20,6 +20,13 @@ uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 | GET | /api/models/{modelId} | 集計結果を再取得 |
 | GET | /api/models/{modelId}/elements/{expressId} | 部材1件の属性情報（プロパティセット） |
 | GET | /api/models/{modelId}/file | 元のIFCファイル（Step 3 の3D表示で使用） |
+| POST | /api/uploads | 分割アップロードの開始 `{filename, size}` → `{uploadId, chunkSize, totalChunks}` |
+| PUT | /api/uploads/{uploadId}/chunks/{index} | チャンク（ファイルの一部）を送る。同じ番号の再送は上書き |
+| POST | /api/uploads/{uploadId}/complete | 受信完了 → 裏で解析開始（すぐ 202） |
+| GET | /api/uploads/{uploadId} | 進み具合 `{status: uploading/processing/done/error, modelId?, detail?}` |
+
+画面は分割アップロードを使います（Cloudflare 経由では 1 リクエスト 100MB まで・応答待ち 100 秒までの制限があるため）。
+`POST /api/models` は 1 リクエストで送る簡易版で、Swagger UI や小さなファイルの確認用に残しています。
 
 ## 試し方（Swagger UI）
 
@@ -32,7 +39,9 @@ uvicorn main:app --host 127.0.0.1 --port 8001 --reload
 - **expressId** はIFCファイル内の `#123` の番号。ブラウザ側の 3D ライブラリ（web-ifc）でも同じ番号が使われるので、Step 3 で「クリックした部材 → このAPIで属性取得」とつなげるキーになります。
 - 解析済みモデルはメモリ上に保持しています（パイロット用。サーバー再起動で消えます）。本番ならDBやキャッシュに置き換えるところです。
 - IFC処理は `ifc_service.py`、HTTPの処理は `main.py` に分けています。
-- メモリに保持するモデルは最大 20 件（`MAX_MODELS`）。超えると最後に使われたのが最も古いものから、ファイルごと捨てます。
+- 受け付けるファイルは最大 500MB（`MAX_SIZE_MB`）。分割アップロードの 1 チャンクは 16MB。
+- メモリに保持するモデルは最大 20 件（`MAX_MODELS`）かつ元ファイルの合計 1000MB（`MAX_TOTAL_MB`）。超えると最後に使われたのが最も古いものから、ファイルごと捨てます（直前に登録した 1 件は残す）。
+- 解析は同時に 2 件まで（`MAX_PARALLEL_ANALYSES`）。
 - 起動時に `uploads/` の前回のファイルを削除します（再起動でモデルが消える仕様と揃えるため）。
 
 ## テスト

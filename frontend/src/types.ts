@@ -43,3 +43,23 @@ export interface ElementDetail extends ElementRow {
  * 部材の 404（対象外）と、モデルの 404（サーバー再起動などで消えた）を区別するために使う
  */
 export const MODEL_NOT_FOUND_DETAIL = 'モデルが見つかりません'
+
+/** POST /api/uploads のレスポンス（分割アップロードの開始） */
+export interface UploadSession {
+  uploadId: string
+  /** 1 チャンクのバイト数（最後のチャンクだけ端数） */
+  chunkSize: number
+  totalChunks: number
+}
+
+/** GET /api/uploads/{uploadId} のレスポンス（backend/upload_sessions.py の to_status()） */
+export interface UploadStatus {
+  uploadId: string
+  status: 'uploading' | 'processing' | 'done' | 'error'
+  receivedChunks: number
+  totalChunks: number
+  /** status が done のとき */
+  modelId?: string
+  /** status が error のとき（原因と対処の日本語メッセージ） */
+  detail?: string
+}

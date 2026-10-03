@@ -52,7 +52,7 @@ Node.js `^20.19.0 || >=22.12.0`（Vite 8 の要件）。`package.json` の `engi
 
 ```
 [app.ts] ファイル選択（change イベント）
-   │  uploadModel(file)  ── POST /api/models ──▶ FastAPI（解析・modelId 発行）
+   │  uploadModel(file)  ── 分割アップロード（/api/uploads）──▶ FastAPI（裏で解析・modelId 発行）
    │  ◀── modelId・集計結果
    │  viewer.load(`/api/models/{modelId}/file`)
    ▼
@@ -112,7 +112,7 @@ Vue プラグインは不要になったので、`plugins` は指定していま
 
 | 関数 | 内容 |
 |---|---|
-| `uploadModel(file)` | `FormData` に `file` を入れて `POST /api/models` |
+| `uploadModel(file, onProgress)` | **分割アップロード**: `POST /api/uploads` → 16MB ずつ `PUT …/chunks/{i}` → `POST …/complete` → 1 秒ごとに `GET /api/uploads/{id}` で解析完了を待つ → `GET /api/models/{modelId}`。進み具合を `onProgress` で通知（送信中 n% / 解析中）。通信断や 5xx は 1 チャンクにつき 3 回までやり直す |
 | `fetchElement(modelId, expressId)` | `GET /api/models/{modelId}/elements/{expressId}` |
 | `modelFileUrl(modelId)` | IFC 本体の URL 文字列を返す（fetch はビューア側で行う） |
 
@@ -150,7 +150,7 @@ Vue の `ref` の代わりに、1 つのオブジェクト `state` に状態を�
 ### 構成
 
 - **骨組み**: `mountApp()` の最初に header / エラー帯 / main（`.viewer-pane` と `.side`）を一度だけ作り、`new IfcViewer(viewerPane, { onLoaded, onSelect, onError })` でビューアを差し込みます。
-- **`onFileChange()`**: `uploadModel` → 成功したら `viewer.load(modelFileUrl(...))`。最後に `fileInput.value = ''` として、同じファイルを再選択しても `change` が発火するようにしています。
+- **`onFileChange()`**: `uploadModel`（進み具合をステータスに「送信中… 45%（54.0 / 120.0 MB）」「サーバーで解析中…」と表示。失敗したら前のモデルのステータスに戻す）→ 成功したら `viewer.load(modelFileUrl(...))`。最後に `fileInput.value = ''` として、同じファイルを再選択しても `change` が発火するようにしています。
 - **`onSelect(expressId)`**: `null`（何もない所をクリック）なら選択解除。それ以外は属性を取得。
   - 部材の 404（`IfcSpace` など）は `{ notFound: true }` として「対象外」と表示。
   - モデルの 404（サーバー再起動などで消えた）は「もう一度IFCファイルを開いてください」、通信失敗などはそのメッセージを赤帯に出し、ハイライトも外す。

@@ -7,7 +7,8 @@ E2E テスト（API・配信）— 稼働中のシステムに対して、利用
   backend\\venv\\Scripts\\python.exe scripts\\e2e_api.py --base https://ifc.shinobuabe.com --skip-heavy
 
 標準ライブラリのみ使用（追加の依存なし）。テストでアップロードしたファイルは最後に削除する。
---skip-heavy を付けると、100MB 超のアップロード（サイズ上限・同時アクセス）の確認を省く。
+--skip-heavy を付けると、100MB 超のアップロード（サイズ上限・同時アクセス・大きなファイルの分割アップロード）の確認を省く。
+--big-mb N で、分割アップロードで送る大きな IFC（合成データ）のサイズを指定する（既定 120MB）。
 """
 import argparse
 import json
@@ -26,6 +27,7 @@ UPLOAD_DIR = ROOT / "backend" / "uploads"
 
 results: list[tuple[str, bool, str]] = []
 created_models: list[str] = []
+created_uploads: list[str] = []  # 分割アップロードのセッション（途中で止めたものの .part を消すため）
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -72,11 +74,53 @@ def upload(base: str, filename: str, data: bytes, timeout: float = 120):
     return status, payload
 
 
+def chunked_upload(base: str, filename: str, data: bytes, timeout: float = 600):
+    """分割アップロード（POST /api/uploads → PUT chunks → complete → 状態の問い合わせ）。(最終状態, 秒) を返す"""
+    t0 = time.perf_counter()
+    body = json.dumps({"filename": filename, "size": len(data)}).encode()
+    status, _, raw = request(base, "POST", "/api/uploads", body, {"Content-Type": "application/json"})
+    if status != 201:
+        return {"status": "http", "code": status, "detail": detail_of(parse_json(raw))}, 0.0
+    session = parse_json(raw)
+    uid, size = session["uploadId"], session["chunkSize"]
+    for i in range(session["totalChunks"]):
+        status, _, raw = request(
+            base, "PUT", f"/api/uploads/{uid}/chunks/{i}", data[i * size : (i + 1) * size],
+            {"Content-Type": "application/octet-stream"}, timeout=300,
+        )
+        if status != 200:
+            return {"status": "http", "code": status, "detail": detail_of(parse_json(raw))}, 0.0
+    request(base, "POST", f"/api/uploads/{uid}/complete")
+    while time.perf_counter() - t0 < timeout:
+        _, _, raw = request(base, "GET", f"/api/uploads/{uid}")
+        st = parse_json(raw)
+        if st.get("status") in ("done", "error"):
+            if st.get("modelId"):
+                created_models.append(st["modelId"])
+            return st, time.perf_counter() - t0
+        time.sleep(1)
+    return {"status": "timeout"}, time.perf_counter() - t0
+
+
+def synthetic_ifc(target_mb: int) -> bytes:
+    """サンプル IFC の DATA 部に、参照されないプロパティ値を詰めて大きくした IFC（形状と部材数は元のまま）"""
+    text = SAMPLE.read_bytes()
+    head, sep, tail = text.rpartition(b"ENDSEC;")
+    # DATA の ENDSEC は最後から 1 つ目（その後ろは END-ISO-10303-21 のみ）
+    line = b"='" + b"x" * 900 + b"';"
+    filler = bytearray()
+    n = 900000
+    while len(filler) < target_mb * 1024 * 1024:
+        filler += b"#%d=IFCPROPERTYSINGLEVALUE('Filler',$,IFCLABEL(" % n + line[1:-1] + b"),$);\n"
+        n += 1
+    return head + bytes(filler) + sep + tail
+
+
 def detail_of(payload) -> str:
     return payload.get("detail", "") if isinstance(payload, dict) else ""
 
 
-def run(base: str, skip_heavy: bool) -> None:
+def run(base: str, skip_heavy: bool, big_mb: int) -> None:
     sample = SAMPLE.read_bytes()
 
     # ---- 配信（本番ビルド） ----
@@ -150,6 +194,32 @@ def run(base: str, skip_heavy: bool) -> None:
         status, p = upload(base, "bad.ifc", data)
         check(name, status == 422 and keyword in detail_of(p), f"{status} {detail_of(p)[:40]}")
 
+    # ---- 分割アップロード ----
+    st, sec = chunked_upload(base, "demo-house.ifc", sample)
+    ok = st.get("status") == "done"
+    if ok:
+        _, _, raw = request(base, "GET", f"/api/models/{st['modelId']}")
+        ok = parse_json(raw).get("elementCount") == 8
+    check("E1 分割アップロード（小さいファイル）→ 解析 → モデル取得", ok, f"{st.get('status')} {sec:.1f}s")
+    st, _ = chunked_upload(base, "bad.ifc", b"<!DOCTYPE html><html></html>")
+    check("E2 分割アップロードで壊れたファイルは status=error と原因", st.get("status") == "error" and "Webページ" in st.get("detail", ""), st.get("detail", "")[:30])
+    body = json.dumps({"filename": "huge.ifc", "size": 501 * 1024 * 1024}).encode()
+    status, _, raw = request(base, "POST", "/api/uploads", body, {"Content-Type": "application/json"})
+    check("E3 500MB 超は開始時点で 413", status == 413 and "500MB" in detail_of(parse_json(raw)), f"{status}")
+    body = json.dumps({"filename": "a.txt", "size": 10}).encode()
+    status, _, _ = request(base, "POST", "/api/uploads", body, {"Content-Type": "application/json"})
+    check("E4 拡張子が .ifc でなければ 400", status == 400, f"{status}")
+    body = json.dumps({"filename": "a.ifc", "size": 10}).encode()
+    _, _, raw = request(base, "POST", "/api/uploads", body, {"Content-Type": "application/json"})
+    uid = parse_json(raw).get("uploadId", "")
+    created_uploads.append(uid)
+    status, _, _ = request(base, "PUT", f"/api/uploads/{uid}/chunks/0", b"x" * 5)
+    check("E5 チャンクの大きさが違えば 400", status == 400, f"{status}")
+    status, _, _ = request(base, "POST", f"/api/uploads/{uid}/complete")
+    check("E6 全チャンクが揃う前の完了通知は 409", status == 409, f"{status}")
+    status, _, _ = request(base, "GET", "/api/uploads/does-not-exist")
+    check("E7 存在しないアップロードは 404", status == 404, f"{status}")
+
     if skip_heavy:
         return
 
@@ -158,7 +228,7 @@ def run(base: str, skip_heavy: bool) -> None:
         big = Path(tmp) / "big.ifc"
         with big.open("wb") as f:
             f.write(b"ISO-10303-21;\n")
-            f.write(b"x" * (101 * 1024 * 1024))
+            f.write(b"x" * (501 * 1024 * 1024))
         data = big.read_bytes()
 
     result: dict = {}
@@ -175,15 +245,30 @@ def run(base: str, skip_heavy: bool) -> None:
     status, _, _ = request(base, "GET", f"/api/models/{mid}")
     elapsed = time.perf_counter() - t
     th.join()
-    check("D1 101MB のアップロードは 413", result.get("status") == 413, f"{result.get('status')} {result.get('sec', 0):.1f}s")
+    check("D1 500MB 超（501MB）の一括アップロードは 413", result.get("status") == 413, f"{result.get('status')} {result.get('sec', 0):.1f}s")
     check("D2 大きなアップロード中も他のリクエストがすぐ返る（1秒未満）", status == 200 and elapsed < 1.0, f"{elapsed * 1000:.0f}ms")
+
+    big = synthetic_ifc(big_mb)
+    st, sec = chunked_upload(base, "big.ifc", big)
+    ok = st.get("status") == "done"
+    if ok:
+        _, _, raw = request(base, "GET", f"/api/models/{st['modelId']}")
+        ok = parse_json(raw).get("elementCount") == 8
+        status, _, raw = request(base, "GET", f"/api/models/{st['modelId']}/file", timeout=600)
+        ok = ok and status == 200 and len(raw) == len(big)
+    check(
+        f"F1 {len(big) / 1024 / 1024:.0f}MB の IFC を分割アップロード → 解析 → ダウンロード",
+        ok, f"{st.get('status')} {st.get('detail', '')[:40]} {sec:.0f}s",
+    )
 
 
 def cleanup() -> None:
     # テストで作ったモデルのファイルだけを消す（他の利用者のファイルには触らない）
-    for mid in created_models:
+    targets = [UPLOAD_DIR / f"{mid}.ifc" for mid in created_models]
+    targets += [UPLOAD_DIR / f"{uid}.part" for uid in created_uploads if uid]
+    for path in targets:
         try:
-            (UPLOAD_DIR / f"{mid}.ifc").unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -192,10 +277,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:5173")
     ap.add_argument("--skip-heavy", action="store_true")
+    ap.add_argument("--big-mb", type=int, default=120)
     args = ap.parse_args()
     print(f"対象: {args.base}\n")
     try:
-        run(args.base.rstrip("/"), args.skip_heavy)
+        run(args.base.rstrip("/"), args.skip_heavy, args.big_mb)
     finally:
         cleanup()
     failed = [r for r in results if not r[1]]

@@ -84,21 +84,30 @@ export function mountApp(root: HTMLElement): void {
   async function onFileChange() {
     const file = fileInput.files?.[0]
     if (!file) return
+    const previousStatus = state.status
     state.error = ''
     state.element = null
     selectSeq++ // 前のモデルへの属性取得の応答が遅れて届いても反映しない
     state.uploading = true
-    state.status = 'サーバーで解析中…'
+    state.status = '送信を準備中…'
     renderHeader()
     renderSide()
     try {
-      const summary = await uploadModel(file)
+      const summary = await uploadModel(file, (p) => {
+        state.status =
+          p.phase === 'uploading'
+            ? `送信中… ${percent(p.sentBytes, p.totalBytes)}%（${mb(p.sentBytes)} / ${mb(p.totalBytes)} MB）`
+            : 'サーバーで解析中…（大きなファイルは数分かかることがあります）'
+        renderHeader()
+      })
       state.model = summary
+      state.status = `${summary.filename}：3Dモデルを準備中…`
       hintEl.hidden = true
       void viewer.load(modelFileUrl(summary.modelId))
     } catch (err) {
       state.error = err instanceof Error ? err.message : String(err)
-      state.status = ''
+      // 前のモデルは画面に残って操作できるので、そのステータスに戻す
+      state.status = state.model ? previousStatus : ''
     } finally {
       state.uploading = false
       fileInput.value = '' // 同じファイルを再選択できるように
@@ -145,7 +154,7 @@ export function mountApp(root: HTMLElement): void {
   function renderHeader() {
     fileInput.disabled = state.uploading
     uploadLabel.classList.toggle('disabled', state.uploading)
-    uploadText.data = state.uploading ? '解析中…' : 'IFCファイルを開く'
+    uploadText.data = state.uploading ? '読み込み中…' : 'IFCファイルを開く'
     statusEl.textContent = state.status
     errorEl.textContent = state.error
     errorEl.hidden = !state.error
@@ -201,6 +210,14 @@ function psetBlock(psetName: string, props: PropertySets[string]): HTMLElement {
       ),
     ),
   )
+}
+
+function percent(part: number, total: number): number {
+  return total ? Math.floor((part / total) * 100) : 100
+}
+
+function mb(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1)
 }
 
 function muted(text: string): HTMLElement {
